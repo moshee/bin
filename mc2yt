@@ -1,0 +1,9 @@
+#!/bin/bash
+# Encode minecraft videos to youtube
+
+name="`basename \"$1\" '.avi'`"
+
+x264 --preset veryslow --tune film --crf 26 -I 300 -o "$name.mp4" "$1"
+mplayer2 -novideo -vo null -vc null -nocorrect-pts -ao pcm:file="$name.wav" "$1"
+neroAacEnc -q 0.6 -ignorelength -if "$name.wav" -of "$name.aac"
+mp4box -fps 30 -add "$name.aac" "$name.mp4"

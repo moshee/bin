@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+# Rename a list of files to consecutive numbers
+
+require 'flag'
+
+def magnitude(n)
+  if n.zero?
+    return 1
+  end
+  mag = 0
+  nn = n.to_f
+  while nn >= 1.0
+    nn /= 10.0
+    mag += 1
+  end
+  mag
+end
+
+flags = Flags.new do |flag|
+  flag.string 'prefix',    '',    'Prefix'
+  flag.bool   'h',         false, 'Show help'
+  flag.string 'begin.in',  '',    'Input filename to begin with'
+  flag.int    'begin.out', 1,     'Output index to begin with'
+  flag.bool   'backwards', false, 'Perform the renaming operation end-to-start (e.g. if shifting numbers upwards)'
+end
+
+if ARGV.size == 0 or flags['h']
+  puts 'Usage: autonumber [-prefix PREFIX] files...'
+  flags.help
+  exit 1
+end
+
+i = flags['begin.out']
+
+list, mag = if (begin_in = flags['begin.in']).empty?
+         [ARGV, magnitude(ARGV.size)]
+       else
+         pos = ARGV.index(begin_in)
+         if pos.nil?
+           $stderr.puts "begin.in: filename '#{begin_in}' does not match in argument list"
+           exit 1
+         end
+         # mag is the number of images being kept + the starting index
+         [ARGV[pos..-1], magnitude(ARGV.size-pos + i-1)]
+       end
+
+delta = 1
+if flags['backwards']
+  delta = -1
+  i += list.size - 1
+end
+
+prefix = flags['prefix']
+list.each do |filename|
+  ext = File.extname(filename)
+  `mv "#{l}" "#{prefix}#{i.to_s.rjust(mag, '0')}#{ext}"`
+  i += delta
+end

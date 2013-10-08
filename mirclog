@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+# Converts mIRC chat logs to HTML with colors and formatting
+
+require 'htmlentities'
+require 'optparse'
+
+options = { :full => false, :wrap => false }
+OptionParser.new do |opts|
+  opts.banner = <<-USAGE
+Usage: #{$0} [options...] logfile.log > log.html"
+       cat logfile.log | #{$0} [options...]
+  USAGE
+
+  opts.on('-t', '--title TITLE', 'Set HTML title (implies -f)') do |title|
+    options[:title] = title
+    options[:full] = true
+  end
+
+  opts.on('-f', '--full', 'Output a full HTML page instead of a snippet') do
+    options[:full] = true
+  end
+
+  opts.on('-w', '--pre-wrap', 'Make the text wrap') do
+    options[:wrap] = true
+  end
+end.parse!
+
+text = HTMLEntities.new.encode ARGF.read, :basic
+
+if options[:full]
+  puts <<-HEAD
+<!doctype html>
+<head>
+<meta charset=utf-8>
+<title>#{options[:title] or Time.now}</title>
+<style>.c0{color:#fff}.c1{color:#000}.c2{color:#008}.c3{color:#080}.c4{color:#c00}.c5{color:#800}.c6{color:#808}.c7{color:#c80}.c8{color:#cc0}.c9{color:#0c}.c10{color:#088}.c11{color:#0cc}.c12{color:#00c}.c13{color:#cc0}.c14{color:#888}.c15{color:#ccc}</style>
+</head>
+<body>
+  HEAD
+end
+if options[:wrap]
+  puts '<pre style="white-space:pre-wrap">'
+else
+  puts '<pre>'
+end
+
+text.each_line do |line|
+  line.strip!
+  spans = 0
+  italic = underline = bold = false
+
+  i = 0
+  loop do
+    break if i > line.length
+    case line[i]
+    when "\x03" # color code incoming
+      code = line[i..(line.length)][/\d{1,2}(,(\d{1,2}))?/]
+      if not code.nil? and code.length > 0
+        fg, bg = code.split(',').map &:to_i
+        print "<span class=\"c#{fg}"
+        print " b#{bg}" if not bg.nil?
+        print "\">"
+        spans += 1
+        i += code.size
+      end
+
+    when "\x0f" # plain text
+      print '</b>' if bold
+      print '</i>' if italic
+      print '</u>' if underline
+      (spans-1).times { print '</span>' }
+      spans = 1
+      bold = italic = underline = false
+
+    when "\x02" # bold
+      if bold
+        print '</b>'
+        bold = false
+      else
+        print '<b>'
+        bold = true
+      end
+
+    when "\x16" # italic
+      if italic
+        print '</i>'
+        italic = false
+      else
+        print '<i>'
+        italic = true
+      end
+
+    when "\x1f" # underline
+      if underline
+        print '</u>'
+        underline = false
+      else
+        print '<u>'
+        underline = true
+      end
+
+    else
+      print line[i]
+    end
+
+    i += 1
+  end
+  print '</b>' if bold
+  print '</i>' if italic
+  print '</u>' if underline
+  spans.times { print "</span>" }
+  puts
+end
+
+puts '</pre>'
+puts '</body>' if options[:full]

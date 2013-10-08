@@ -1,0 +1,770 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+# My main manga translation automation tool
+
+require 'psych'
+require 'curb'
+require 'json'
+require 'io/console'
+require 'fileutils'
+require 'net/http'
+require 'flag'
+
+# Utilities
+
+def bold(str)
+  "\e[1m#{str}\e[m" end
+def red(str)
+  "\e[31m#{str}\e[m" end
+def warn(str)
+  puts bold('Warning: ') + str end
+def err(str)
+  puts bold(red('Error: ')) + str end
+def shell(str)
+  puts str
+  if not system str
+    err 'Command exited with non-zero status.'
+    exit 1
+  end
+end
+
+
+def parse_id(id)
+  return ArgumentError, "Malformed identifier: #{id} (should match /^(v|c)\d+$/)" unless id =~ /^(v|c)\d+$/
+  unit = case id[0]
+  when 'c' then 0
+  when 'v' then 1
+  end
+  num = id[1..-1].to_i
+  [unit, num]
+end
+
+def prompt(str)
+  print str + ' '
+  loop do
+    resp = $stdin.gets.chomp
+    return true if resp =~ /y(es)?/i
+    return false if resp =~ /no?/i
+      print 'y[es] or n[o]? '
+  end
+end
+
+def input(str)
+  print str + ' '
+  $stdin.gets.chomp
+end
+
+def pass_input
+  print 'Password: '
+  s = $stdin.noecho(&:gets).chomp
+  puts
+  s
+end
+
+# Monkeypatches
+
+class Numeric
+  def mag
+    m = 0
+    nn = +self
+    while nn > 0
+      nn /= 10
+      m += 1
+    end
+    m
+  end
+
+  KB = 1<<10
+  MB = 1<<20
+  GB = 1<<30
+
+  def bytes
+    case
+    when self < KB then "#{to_i} b"
+    when self < MB then "%.1f k" % (to_f/KB)
+    when self < GB then "%.1f M" % (to_f/MB)
+    else                "%.1f G" % (to_f/GB)
+    end
+  end
+
+  S = 1
+  M = 60*S
+  H = 60*M
+  D = 24*H
+  Y = 365*D
+
+  def duration
+    case when (self.is_a?(Float) and nan?)
+      '???s'
+    when self < S
+      '0s'
+    else
+      s = ''
+      s = "#{self.to_i%M}s" if self >= S
+      s = "#{(self.to_i%H) / M}m#{s}" if self >= M
+      s = "#{(self.to_i%D) / H}h#{s}" if self >= H
+      s = "#{(self.to_i%Y) / D}d#{s}" if self >= D
+      s
+    end
+  end
+end
+
+# Chapter splits
+# [a]	[b]	[#] [title ->$] (whitespace separated)
+# ex.
+# 000	020	20	THE PRINCE OF ONI: Bagworm
+# TODO: make it so only the first page needs to be specified
+# TODO: def process(files) → Array[Array]
+# TODO: make initialize() read from file
+class Split
+  def initialize(str)
+    a, b, @chapter, @title = str.chomp.split(/\s+/, 4)
+    @a, @b = /^#{a}/, /^#{b}/
+  end
+
+  attr_accessor :a, :b, :chapter, :title
+
+  def process(files)
+
+  end
+
+  def to_s
+    "Chapter #{@chapter}\t#{@a}-#{@b} (#{@title})"
+  end
+end
+
+# now for the meat
+class Commander
+  def resize(*args)
+    flags = Flags.new(args) do |flag|
+      flag.bool 'g',      false, 'guerilla mode (don\'t check for .manga etc)'
+      flag.int  'h',      1600,  'Target height'
+      flag.bool 'H',      false, 'Use the smallest height as target (overrides -h)'
+      #flag.int  'colors', 64,    'Number of colors to use per image'
+    end
+    if args.size == 0
+      puts 'Usage: resize <release-identifier>'
+      puts 'Resizes and crops images to fit the smallest width and height among them for consistency. Pages will be cropped from the gutter side (right for odd, left for even). Skips files with dashes in them (spreads).'
+      flags.help
+      exit 1
+    end
+
+    if not flags['g']
+      manga?
+    end
+
+    images, there = if flags['g']
+             list = args.map { |i| File.join('.', i) }
+             [list, '.']
+           else
+             there = res_dir args.shift
+             list = imgs_in(there).map { |i| File.join(there, i) }
+             [list, there]
+           end
+
+    sizes = `identify -format '%w %h\n' #{images.map { |i| "\"#{i}\"" }.join(' ')}`
+      .split("\n").reject(&:empty?).map { |pair| pair.split(' ').map(&:to_i) }
+
+    w = sizes.map(&:first).min
+
+    h = if flags['H']
+      sizes.map(&:last).min
+    else
+      flags['h']
+    end
+
+    max_delta = 0
+
+    puts 'Aligning heights...'
+    images.each_index do |i|
+      # we'll resize EVERYTHING to x#{h}, including the spreads
+
+      base = File.basename images[i]
+      img = images[i]
+
+      delta = sizes[i].last - h
+      max_delta = [delta, max_delta].map(&:magnitude).max
+
+      if sizes[i].last == h
+        puts "\033[J[#{base}] Skipped (0px change) (max #{max_delta}px)\033[1A"
+        next
+      end
+
+      puts "\033[J[#{base}] #{sizes[i].last}px → #{h}px (#{delta}px change) (max #{max_delta}px)\033[1A"
+      system "convert \"#{img}\" -resize x#{h} \"#{img}\""
+    end
+    puts
+
+    max_delta = 0
+
+    puts 'Aligning widths...'
+    images.each_index do |i|
+      base = File.basename images[i]
+      img = images[i]
+      next unless base =~ /^\d+\./ # skip spreads
+
+      if sizes[i].first == w # skip if it's already one of the smallest
+        puts "\033[J[#{base}] Skipped (0px change) (max #{max_delta}px)\033[1A"
+        # still reduce the colors even if there's no resize
+        #system "convert \"#{img}\" -colors #{flags['colors']} \"#{img}\""
+        next
+      end
+
+      params = case base.rpartition('.').first.to_i % 2
+      when 1 then ' -gravity west ' # odd, gutter on right side
+      when 0 then ' -gravity east '
+      end
+
+      delta = sizes[i].first - w
+      max_delta = [delta, max_delta].map(&:magnitude).max
+      puts "\033[J[#{base}] #{sizes[i].first}px → #{w}px (#{delta}px change) (max #{max_delta}px)\033[1A"
+
+      if File.extname(img) == '.png'
+        # only keep low color count for pngs. jpgs will probably be full color things.
+        color_count = `identify -format '%k' '#{img}'`
+        system "convert '#{img}' -colors #{color_count.to_i} -unique-colors -write mpr:cmap +delete '#{img}' #{params} -resize #{w}x#{h}^ -extent #{w}x#{h} -map mpr:cmap '#{img}'"
+      else
+        system "convert '#{img}' #{params} -resize #{w}x#{h}^ -extent #{w}x#{h} '#{img}'"
+      end
+    end
+    puts
+  end
+
+  def prep_raws(*args)
+    flags = Flags.new(args) do |flag|
+      flag.bool 'nc',    false, 'Do not crop/rotate images'
+      flag.bool 'g',     false, 'Guerilla mode'
+      flag.int  'start', 1,     'Output page to start on'
+    end
+    if args.empty?
+      puts 'Usage: prep-raws [options] <release-identifier>'
+      flags.help
+      puts <<-END
+
+Crop, rename, and rotate raws straight from the scanner into something that can
+be put into Photoshop, etc. If -c is given, assumes there are two pages per
+image and splits them accordingly.  Assumes freshly scanned images to have the
+'.jpeg' extension, and renames them to '.jpg' for consistency.
+      END
+      exit 1
+    end
+
+    id = args.first
+    i = flags['start']
+
+    manga? if not flags['g']
+
+    Dir.chdir raw_dir(id)
+    
+    files = Dir.glob("*.jpeg")
+      .sort_by { |f| f =~ /(\d+)\.jpeg$/; $1.to_i }
+
+    width = (files.size*2).mag
+
+    if not flags['nc']
+      files.each do |file|
+        file.chomp!
+        print "#{file} "
+        first = i*2
+        second = first+1
+
+        print '... '
+        if not system "convert '#{file}' -rotate -90 -write mpr:temp +delete mpr:temp -crop 50%x100% temp.jpg"
+          err 'Command exited with non-zero status.'
+          exit 1
+        end
+        print '→ '
+        a, b = [second, first].map { |s| s.to_s.rjust(width, '0') + '.jpg' }
+        File.rename 'temp-0.jpg', a
+        File.rename 'temp-1.jpg', b
+        puts "#{b}, #{a}"
+        i += 1
+      end
+    else
+      files.each do |file|
+        name = i.to_s.rjust(width, '0') + '.jpg'
+        puts "'#{file}' → '#{name}'"
+        File.rename file, name
+      end
+    end
+
+    Dir.chdir @here
+  end
+
+  def split(*args)
+    if args.size != 1
+      puts <<-END
+Usage: split <release-identifier> <split-file>
+Splits a volume into chapters according to split-file and zips them up.
+Split files are organized as whitespace-separated rows, containing
+the start page, end page, chapter number, and optional (ignored) chapter
+title. Example:
+000a 024 1 title (ignored)
+025  046 2 another title (ignored also)
+047  070 3 the last title
+      END
+      exit 1
+    end
+    manga?
+
+    id = args.shift
+    splitfile = File.join(id, 'Splitfile')
+
+    splits = File.open(splitfile, 'r').read.lines
+      .reject { |s| s.empty? }
+      .map { |line| Split.new(line) }
+
+    if splits.size.zero?
+      err 'No valid splits given.'
+      exit 1
+    end
+
+    there = res_dir id
+    Dir.chdir there
+    imgs = imgs_in there
+
+    cur_split_id = 0
+    split = splits.first
+    files = []
+
+    imgs.each do |file|
+      files << file
+      if file =~ split.b
+        zipfile = File.join(@here, "#{id} c#{split.chapter}.zip")
+        puts "Creating #{bold zipfile}"
+        system "zip -q '#{zipfile}' #{files.join(' ')}"
+        files.clear
+        cur_split_id += 1
+        if cur_split_id >= splits.size
+          exit
+        end
+        split = splits[cur_split_id]
+      end
+    end
+
+    Dir.chdir @here
+  end
+
+  def distro(*args)
+    flags = Flags.new(args) do |flag|
+      flag.bool   'u',      false, 'Upload file and update website database after preparing'
+      flag.bool   'f',      false, 'Force the whole process even if the zip file already exists'
+      flag.bool   'no-opt', false, 'Skip optimizations'
+      flag.bool   'nsfw',   false, 'Mark this release as NSFW (if -u is given)'
+      flag.string 'notes',  '',    'Release notes (if -u is given)'
+      flag.string 'user',   '',    'User name to authenticate with (if -u is given)'
+    end
+    if args.size < 1
+      puts 'Usage: distro <release-identifier> [trailing info...]'
+      puts 'Size-optimizes and packages listed release into a zip file.'
+      flags.help
+      exit 1
+    end
+    manga?
+
+    if @short_name.nil? or @short_name.empty?
+      err "'short name' field missing from .manga file."
+      exit 1
+    end
+
+    release = args.shift
+    title = File.basename @here
+
+    # build zip file name
+    zip_name = "#{title} #{release}"
+    unless args.empty? then zip_name << " #{args.join(' ')}" end
+    zip_name << " [#{@group_name}].zip"
+    path = File.join(@here, zip_name)
+    filesize = 0
+
+    if File.exist?(path) and not flags['f']
+      warn "The archive '#{zip_name}' already exists in here."
+      warn "Use '-f' to run distro anyways."
+    else
+      # get and optimize files
+      Dir.chdir res_dir(release)
+      files = Dir.entries('.')
+
+      jpgs = files.select { |file| File.extname(file) == '.jpg' }
+      pngs = files.select { |file| File.extname(file) == '.png' }
+
+      if not flags['no-opt']
+        if jpgs.size > 0
+          saved = 0
+
+          puts "Optimizing #{jpgs.size} .jpg(s)"
+          jpgs.each_index do |i|
+            jpg = jpgs[i]
+            s = `jpegoptim --strip-all #{jpg}`
+            from, to = s[/\d+ \-\-> \d+/].split(' --> ').map(&:to_i)
+
+            if to < from
+              saved += from-to
+            end
+            puts "\033[J[#{i+1}/#{jpgs.size}] Saved #{saved.bytes}\033[1A"
+          end
+          puts
+        end
+
+        if pngs.size > 0
+          saved = 0
+
+          puts "Optimizing #{pngs.size} .png(s)"
+          pngs.each_index do |i|
+            png = pngs[i]
+            from = File.size(png)
+            system "optipng -quiet #{png}"
+            to = File.size(png)
+
+            if to < from
+              saved += from-to
+            end
+            puts "\033[J[#{i+1}/#{pngs.size}] Saved #{saved.bytes}\033[1A"
+          end
+          puts
+        end
+      end
+
+      all_files = jpgs + pngs
+
+      exit if not prompt "Create zip file #{zip_name}?"
+
+      system "zip -q \"#{path}\" #{all_files.join(' ')}"
+
+      Dir.chdir(@here)
+    end
+    filesize = File.size path
+    puts "Filesize: #{filesize} (#{filesize.bytes})"
+
+    exit if not flags['u']
+
+    unit, num = parse_id release
+
+    sessid = do_auth flags['user']
+    
+    notes = flags['notes']
+
+    if notes.empty?
+      tempfile = `mktemp releasenotes.XXXXX`.chomp
+      system "vim #{tempfile}"
+      File.open(tempfile) do |f|
+        notes = f.read
+      end
+      File.delete tempfile
+    end
+
+    params = {
+      sid: @id,
+      unit: unit,
+      num: num,
+      filename: File.basename(zip_name),
+      nsfw: flags['nsfw'],
+      filesize: filesize,
+      status: notes
+    }.to_json
+
+    c = Curl::Easy.new(add_release_url)
+    c.multipart_form_post = true
+
+    total = 0
+    started = 0
+
+    c.on_progress do |_, _, ul_total, ul_now|
+      total = ul_total
+      now = Time.now.to_f
+      so_far = now - started + c.pre_transfer_time
+      speed = ul_now / so_far
+      time_left = if speed.zero? then 0 else (ul_total - ul_now).to_f / speed end
+
+      pct = ((ul_now.to_f / ul_total.to_f) * 100).to_i rescue 0
+      eta = if time_left < 1 then 'Almost there!' else "About #{time_left.duration} left" end
+      puts "%s / %s (#{pct}%%) @ ~%s/s (#{eta})\033[K\033[1A" % [ul_now, ul_total, speed].map(&:bytes)
+      true
+    end
+
+    c.on_complete do
+      puts
+      true
+    end
+
+    c.on_success do |easy|
+      puts "\033[1A#{total.bytes} / #{total.bytes} (100%) (Time elapsed: #{(Time.now.to_f-started.to_f).duration})\033[K"
+      json = JSON.parse c.body_str
+      if not json['ok']
+        err json['error']
+        exit 1
+      end
+
+      puts "Successfully added #{bold release} of #{bold title}."
+      puts "Server returned release id = #{bold json['id']}."
+      true
+    end
+
+    begin
+      cover = File.realpath(@short_name + '.jpg')
+      thumb = File.realpath(@short_name + '-thumb.jpg')
+    rescue Errno::ENOENT
+      err "Couldn't find cover image and/or thumbnail"
+      exit 1
+    end
+
+    started = Time.now.to_f
+    c.http_post(Curl::PostField.content('s', sessid),
+                Curl::PostField.content('data', params),
+                Curl::PostField.file('file', path, File.basename(path)),
+                Curl::PostField.file('cover', cover, File.basename(cover)),
+                Curl::PostField.file('thumb', thumb, File.basename(thumb)))
+  end
+
+  def add_series(*args)
+    flags = Flags.new(args) do |flag|
+      flag.string 'user',        '', 'Username to use for authentication'
+      flag.string 'name',        '', 'Title'
+      flag.string 'shortname',   '', 'Short name (without spaces)'
+      flag.string 'ja_name',     '', 'Title in Japanese'
+      flag.string 'romaji_name', '', 'Title in romaji'
+      flag.string 'notes',       '', 'Notes'
+      flag.string 'url',         '', 'URL'
+
+      flag.bool 'f', false, 'Skip displaying the "are you sure"'
+    end
+
+    config = manga?
+
+    errored = false
+    %w(shortname ja_name romaji_name).each do |f|
+      if flags[f].empty?
+        err "'-#{f}' not given."
+        errored = true
+      end
+    end
+    exit 1 if errored
+
+    cover = "#{flags['shortname']}.jpg"
+    thumb = "#{flags['shortname']}-thumb.jpg"
+
+    err "'#{cover}' (cover image) not found in here." unless File.exist? cover
+    err "'#{thumb}' (thumb image) not found in here." unless File.exist? thumb
+
+    shell "jpegoptim --strip-all #{cover}"
+    shell "jpegoptim --strip-all #{thumb}"
+
+    name = if flags['name'].empty? then File.basename(@here) else flags['name'] end
+
+    json = {
+      name: name,
+      shortname: flags['shortname'],
+      ja_name: flags['ja_name'],
+      romaji_name: flags['romaji_name'],
+      notes: flags['notes'],
+      url: flags['url'],
+      type: 0 # TODO: configurable? detectable?
+    }
+
+    if not flags['f']
+      puts %/
+  ID: (To be determined by server)
+  Title: #{bold json[:name]}
+         (#{bold json[:shortname]} • #{bold json[:ja_name]} • #{bold json[:romaji_name]})
+  URL: #{if json[:url].empty? then '(No URL)' else bold json[:url] end}
+  Notes: #{if json[:notes].empty? then '(No notes)' else bold json[:notes] end}
+  Type: Manga
+      /
+
+      if not prompt 'Does this look right?'
+        exit
+      end
+    end
+
+    sessid = do_auth flags['user']
+
+    c = Curl::Easy.new(add_series_url)
+    c.multipart_form_post = true
+    c.on_success do
+      resp = JSON.parse c.body_str
+      if not resp['ok']
+        err resp['error']
+        exit 1
+      end
+
+      puts "Successfully added series #{bold json[:name]}."
+      puts "Server returned series id = #{bold resp['id']}."
+
+      config['id'] = resp['id'].to_i
+      config['short name'] = flags['shortname']
+      File.open('.manga', 'w') do |f|
+        f.puts Psych.dump config
+        puts "Series info written to #{File.realpath('.manga')}."
+      end
+    end
+
+    c.http_post(Curl::PostField.content('s', sessid),
+                Curl::PostField.content('data', json.to_json),
+                Curl::PostField.file('cover', cover, cover),
+                Curl::PostField.file('thumb', thumb))
+  end
+
+  def update_release(*args)
+    err 'Not implemented'
+    exit 1
+  end
+
+  def update_series(*args)
+    err 'Not implemented'
+    exit 1
+  end
+
+  def add(*args)
+    if args.empty?
+      puts 'Usage: add <release-identifier> [raw-files...]'
+      puts 'Create directories for the specified chapters/volumes.'
+      exit 1
+    end
+    manga?
+
+    id = args.shift
+
+    Dir.mkdir(id) rescue nil
+    %w(raw psd res).each { |section| Dir.mkdir(File.join(id, section)) }
+
+    unless args.empty?
+      raws = raw_dir id
+      args.each do |raw|
+        case
+        when Dir.exists?(raw)
+          FileUtils.cp_r Dir.glob("#{raw}/*"), "'#{raws}'"
+        when File.extname(raw) == '.zip'
+          shell "unzip '#{raw}' -d '#{raws}'"
+        end
+      end
+    end
+  end
+
+  def help(*args)
+    if args.empty?
+      puts <<-END
+Usage: #{File.basename __FILE__} <subcommand> [subcommand-args...]
+Subcommands: #{(Commander.public_instance_methods - Object.public_instance_methods).join(', ').tr('_', '-')} 
+General purpose manga scanlation management and distro tool. Requires the
+following tools to be installed:
+  - jpegoptim
+  - optipng
+  - convert (imagemagick)
+  - identify (imagemagick)
+  - zip
+  - unzip
+  - mktemp
+Though this tool attempts to be as platform-agonstic as possible, it will
+probably only work on *nix (including Cygwin) because of path convensions and
+various other nonsense.
+
+Expected directory structure:
+  <series title>
+  ├─.manga
+  ├─v<zero padded integer>
+  │ ├─psd
+  │ │ └─<psd files...>
+  │ ├─raw
+  │ │ └─<jpg or png files...>
+  │ └─res
+  │   └─<jpg or png files...>
+  ├─c<zero padded integer>
+  │ └─...
+  └─...
+
+Many of the subcommands have a '-g' (g for guerilla) flag, which causes the
+tool to skip checking for a '.manga' description file. This is nice for
+one-offs and doujinshi. Use `#{File.basename __FILE__} help <subcommand>` to check if this is
+the case for each.
+      END
+      exit 1
+    else
+      send args.shift.tr('-', '_') # with no arguments
+    end
+  end
+
+  def test(*args)
+    puts 23.duration
+    puts 34324.duration
+    puts 333.duration
+    puts 60.duration
+    puts 360.duration
+    puts 999999.duration
+  end
+
+  private
+
+  def manga?
+    unless File.exist? '.manga'
+      err 'working directory is not a manga directory (missing ".manga" file?).'
+      exit 1
+    end
+    config = Psych.load_file('.manga')
+    @group_name = config['group name']
+    @id = config['id']
+    @here = Dir.pwd
+    @remote = config['remote']
+    @short_name = config['short name']
+    config
+  end
+
+  def update_release_url; File.join(@remote, 'update', 'release') end
+  def update_series_url; File.join(@remote, 'update', 'series') end
+  def add_release_url; File.join(@remote, 'add', 'release') end
+  def add_series_url; File.join(@remote, 'add', 'series') end
+  def auth_url; File.join(@remote, 'auth') end
+
+  def do_auth(user='')
+    loop do
+      if user.empty? then user = input 'Username:' end
+      pass = pass_input
+
+      resp = Net::HTTP.post_form URI(auth_url), user: user, pass: pass
+      json = JSON.parse resp.body
+      return json['s'] if json['ok']
+      err "Authentication error: #{json['error']}"
+    end
+  end
+
+  def imgs_in(dir)
+    there = if @here then File.join(@here, dir) else dir end
+    Dir.entries(there).select { |f| %w(.jpg .jpeg .png).include? File.extname(f) }
+  end
+
+  def check_id(id)
+    if not Dir.exists? id
+      raise RuntimeError, "Release identifier '#{id}' does not seem to exist"
+    end
+  end
+
+  def raw_dir(id)
+    check_id(id)
+    File.join(id, 'raw')
+  end
+
+  def res_dir(id)
+    check_id(id)
+    File.join(id, 'res')
+  end
+
+  def psd_dir(id)
+    check_id(id)
+    File.join(id, 'psd')
+  end
+end
+
+commander = Commander.new
+
+if ARGV.size > 0
+  cmd = ARGV.shift
+  cmdd = cmd.tr('-', '_').intern
+  if Commander.public_instance_methods.include? cmdd
+    commander.public_send cmdd, *ARGV
+  else
+    err "No such subcommand: '#{cmd}'"
+    err "Try running `#{File.basename __FILE__} -help` for help."
+    exit 1
+  end
+else
+  commander.help
+end

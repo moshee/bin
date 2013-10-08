@@ -1,0 +1,37 @@
+#!/bin/bash
+# rename all the named files by replacing underscores with spaces or vice versa
+
+usage () {
+  cat <<EOH
+Usage: `basename $0` [-sh] files...
+       ls | $0 [-sh]
+Options:
+  -h   Display help and exit.
+  -s   Replace spaces with underscores. Default behavior is to replace
+       underscores with spaces.
+EOH
+  exit 1
+}
+
+[[ -z "$@" ]] && usage
+
+src='_'
+dst=' '
+
+case "$1" in
+  -h)
+    usage
+    ;;
+  -s)
+    src=' '
+    dst='_'
+    shift 1
+    ;;
+esac
+
+for i in "$@"; do
+  if echo "$i" | grep -q "$src"; then
+    r=`echo "$i" | tr "$src" "$dst"`
+    mv "$i" "$r"
+  fi
+done

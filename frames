@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+# Extract frames from a video file using mplayer2
+
+def usage
+  puts 'Usage: frames mm:ss-mm:ss filename [mplayer options...]'
+  exit 1
+end
+
+def seconds(str)
+  m, s = str.split(':').map(&:to_i)
+  m*60 + s
+end
+
+usage if ARGV.size < 2 or ARGV.first == '-h'
+
+time = ARGV.shift.split('-')
+usage if time.size != 2
+frames = (seconds(time.last) - seconds(time.first)).abs * 24
+filename = ARGV.shift
+exec "mplayer2 #{ARGV.join(' ')} -vo jpeg -ss #{time.first} -frames #{frames} '#{filename.gsub("'", "\\'")}'"

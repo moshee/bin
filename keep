@@ -1,0 +1,15 @@
+#!/bin/bash
+# Remove all but every Nth file
+
+set -e
+
+if [ -z "$1" ]; then
+	echo 'Usage: keep N files...'
+	echo 'Removes all but every Nth file in files'
+	exit 1
+fi
+
+n=$1
+shift 1
+
+ls "$@" | awk "NR % $n != 0" | xargs rm

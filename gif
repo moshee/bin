@@ -1,0 +1,61 @@
+#!/bin/bash
+# This is a script used to create animated gifs from a specified set of images.
+# It uses ImageMagick for the task. The only thing this does is condense the
+# flags passed to convert and some nice defaults that can be tweaked if needed.
+# TODO: mplayer integration
+usage() {
+  cat <<EOF
+Usage: $0 -o output-file [options] input-files...
+Options:
+  -h   show help
+  -o   set output file
+  -d   set frame delay in multiples of 0.1 seconds
+  -c   number of colors to use
+  -O   optmize image (type is one of "", "Transparency")
+  -s   set dimensions
+EOF
+}
+
+DELAY=8
+COLOR=16
+OUTFILE=
+OPTIM=0
+OPTIMTYPE=
+INPUT=$1
+
+while getopts "hd:c:o:O:" flag; do
+  case $flag in
+    h)
+      usage
+      exit 1
+      ;;
+    d)
+      DELAY=$OPTARG
+      ;;
+    c)
+      COLOR=$OPTARG
+      ;;
+    o)
+      OUTFILE=$OPTARG
+      ;;
+    O)
+      OPTIM=1
+      OPTIMTYPE=$OPTARG
+      ;;
+    \?)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+if [ ! -n OUTFILE ]; then
+  echo "No output file given."
+  exit 1
+fi
+
+command="convert -delay $DELAY -resize 512x288 -ordered-dither checks,$COLOR"
+[[ $OPTIM ]] && command="$command -layers Optimize$OPTIMTYPE"
+`$command "$@" "$OUTFILE"`

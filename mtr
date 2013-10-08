@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+# Normalize MangaTraders archive filenames to be more consistent and sortable
+
+def normalize(str)
+  str.tr!('_', ' ')
+  str.squeeze!(' ')
+  str.slice!(/^\d+\-/)
+  ext = str.slice!(/\.\w+$/)
+
+  parts = str.split(' ')
+  title_parts = parts.take_while { |d| not (d =~ /v(ol)? ?\d+/i or d =~ /ch?\d+(\-\d+)?/) }
+  title = title_parts.join(' ')
+  str = parts[title_parts.size .. -1].join(' ')
+  
+  vol = str.slice!(/v(ol)?\s?\d+/i)
+  vol.sub!(/v(ol?) ?/i, 'v') unless vol.nil?
+  ch = str.slice!(/ch?\s*\d+(\-\d+)?/)
+  ch.sub!(/ch\s*/i, 'c') unless ch.nil?
+  extra = str.slice!(/\+(omake|extras?)/i)
+  extra << 's' if extra == 'extra'
+  part = str.slice!(/(p(ar)?t)?\s?\(?\d\s?of\s?\d\)?/i)
+  group = str.strip.sub(/^\[/, '').sub(/\]$/, '')
+
+  if part
+    part_n = part.chars.to_a.select { |ch| ch =~ /\d/ }.map(&:to_i)
+    part_s = "(#{part_n.first} of #{part_n.last})"
+  else
+    part_s = nil
+  end
+
+  s = title
+  [vol, ch, extra, part_s].each { |d| s << ' ' << d unless d.nil? }
+  s << ' [' + group + ']' unless group.empty?
+  s << ext.to_s
+  s
+end
+
+$<.each do |line|
+    orig_line = line.dup.strip
+    s = normalize line
+    puts "mv '#{orig_line}' '#{s}'"
+end
+
+#$<.zip($<.map(&method(:normalize))).each { |s| puts "mv '#{s.first}' '#{s.last}'" }
