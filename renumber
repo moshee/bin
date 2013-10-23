@@ -92,7 +92,8 @@ delta = to - from
 
 block = ->(page) do
   #puts "moving #{page.filename} to #{page.add delta, mag}"
-  system "mv \"#{page.filename}\" \"#{page.add delta, mag}\"" or exit 1
+  #system "mv \"#{page.filename}\" \"#{page.add delta, mag}\"" or exit 1
+  File.rename(page.filename, page.add(delta, mag))
 end
 
 # if the numbers are shifting upwards, we want to go backwards or else they'd
