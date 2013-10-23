@@ -18,11 +18,11 @@ def magnitude(n)
 end
 
 flags = Flags.new do |flag|
-  flag.string 'prefix',    '',    'Prefix'
-  flag.bool   'h',         false, 'Show help'
-  flag.string 'begin.in',  '',    'Input filename to begin with'
-  flag.int    'begin.out', 1,     'Output index to begin with'
-  flag.bool   'backwards', false, 'Perform the renaming operation end-to-start (e.g. if shifting numbers upwards)'
+  flag.string 'prefix', '',    'Prefix'
+  flag.bool   'n',      false, 'Sort by regexing out a number in filename'
+  flag.int    'i',      1,     'Beginning index'
+  flag.int    'width',  0,     'Width to pad with zeroes to (0 for auto)'
+  flag.bool   'h',      false, 'Show help'
 end
 
 if ARGV.size == 0 or flags['h']
@@ -31,29 +31,23 @@ if ARGV.size == 0 or flags['h']
   exit 1
 end
 
-i = flags['begin.out']
+i = flags['i']
 
-list, mag = if (begin_in = flags['begin.in']).empty?
-         [ARGV, magnitude(ARGV.size)]
-       else
-         pos = ARGV.index(begin_in)
-         if pos.nil?
-           $stderr.puts "begin.in: filename '#{begin_in}' does not match in argument list"
-           exit 1
-         end
-         # mag is the number of images being kept + the starting index
-         [ARGV[pos..-1], magnitude(ARGV.size-pos + i-1)]
-       end
+list = ARGV
 
-delta = 1
-if flags['backwards']
-  delta = -1
-  i += list.size - 1
+if flags['width'] > 0
+  mag = flags['width']
+else
+  mag = magnitude ARGV.size
+end
+
+if flags['n']
+  list.sort_by! { |file| n = file[/\d+/].to_i; puts "#{file} #{n}"; n }
 end
 
 prefix = flags['prefix']
 list.each do |filename|
   ext = File.extname(filename)
   `mv "#{filename}" "#{prefix}#{i.to_s.rjust(mag, '0')}#{ext}"`
-  i += delta
+  i += 1
 end
