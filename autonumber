@@ -54,6 +54,6 @@ end
 prefix = flags['prefix']
 list.each do |filename|
   ext = File.extname(filename)
-  `mv "#{l}" "#{prefix}#{i.to_s.rjust(mag, '0')}#{ext}"`
+  `mv "#{filename}" "#{prefix}#{i.to_s.rjust(mag, '0')}#{ext}"`
   i += delta
 end

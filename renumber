@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 # encoding: utf-8
+# Take a list of images which are named by a number (page number) and shift the
+# numbers up or down. Handles double pages (matching /(\d+)\-(\d+)/) properly.
 
 require 'flag'
 

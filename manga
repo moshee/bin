@@ -81,9 +81,9 @@ class Numeric
   def bytes
     case
     when self < KB then "#{to_i} b"
-    when self < MB then "%.1f k" % (to_f/KB)
-    when self < GB then "%.1f M" % (to_f/MB)
-    else                "%.1f G" % (to_f/GB)
+    when self < MB then "%.1g k" % (to_f/KB)
+    when self < GB then "%.1g M" % (to_f/MB)
+    else                "%.1g G" % (to_f/GB)
     end
   end
 
@@ -135,6 +135,31 @@ end
 
 # now for the meat
 class Commander
+  class << self
+    GROUP_NAME = 'display: none;'
+    REMOTE = 'http://manga.displaynone.us/remote'
+  end
+
+  def init(*args)
+    if args.size == 0
+      puts 'Usage: init <series-name>'
+      puts 'Creates a new folder and initializes a .manga file with some defaults'
+      exit 1
+    end
+
+    Dir.mkdir args.first
+    Dir.chdir args.first
+
+    @config['group name'] = GROUP_NAME
+    @config['remote'] = REMOTE
+
+    File.open('.manga', 'w') do |f|
+      f.puts Psych.dump @config
+    end
+
+    puts "Empty manga directory initialized in #{args.first}."
+  end
+
   def resize(*args)
     flags = Flags.new(args) do |flag|
       flag.bool 'g',      false, 'guerilla mode (don\'t check for .manga etc)'
