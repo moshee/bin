@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+require 'flag'
+
+flags = Flags.new do |flag|
+  flag.int 'from', 0, 'Beginning file number (from the name)'
+  flag.int 'to',   0, 'Intended shift destination index'
+  flag.int 'width', 0, 'Filename width to pad to. 0 for auto.'
+end
+
+def help
+  $stderr.puts 'Usage: renumber -from <m> -to <n> <files...>'
+end
+
+from, to = flags['from'], flags['to']
+
+if from.zero? and to.zero?
+  help
+  flags.help
+  exit
+end
+
+if from == to
+  $stderr.puts 'From and to are the same — nothing to do!'
+  exit
+end
+
+list = flags.args.sort
+
+if list.empty?
+  help
+  flags.help
+  exit
+end
+
+def magnitude(n)
+  return 1 if n.zero?
+
+  mag = 0
+  nn = n.to_f
+
+  while nn >= 1.0
+    nn /= 10.0
+    mag += 1
+  end
+
+  mag
+end
+
+class Page
+  def initialize(name)
+    if m = name.match(/(\d+)\-(\d+)/)
+      @low = m[1].to_i
+      @high = m[2].to_i
+      @kind = :spread
+    else
+      @low = name[/^\d+/].to_i
+      @kind = :page
+    end
+
+    @filename = name
+    @ext = File.extname(name)
+  end
+
+  attr_reader :filename
+
+  def add(delta, mag)
+    case @kind
+    when :spread
+      low =  (@low  + delta).to_s.rjust(mag, '0')
+      high = (@high + delta).to_s.rjust(mag, '0')
+      "#{low}-#{high}#{@ext}"
+    when :page
+      (@low + delta).to_s.rjust(mag, '0') + @ext
+    end
+  end
+end
+
+pages = list.drop_while { |filename| filename[/^\d+/].to_i < from }
+  .map { |filename| Page.new filename }
+
+if flags['width'].zero?
+  mag = magnitude list.size
+else
+  mag = flags['width']
+end
+
+delta = to - from
+
+block = ->(page) do
+  #puts "moving #{page.filename} to #{page.add delta, mag}"
+  system "mv \"#{page.filename}\" \"#{page.add delta, mag}\"" or exit 1
+end
+
+# if the numbers are shifting upwards, we want to go backwards or else they'd
+# all overwrite the same file one by one. Otherwise go forwards for the same
+# reason.
+if delta < 0
+  pages.each &block
+else
+  pages.reverse_each &block
+end
