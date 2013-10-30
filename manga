@@ -81,9 +81,9 @@ class Numeric
   def bytes
     case
     when self < KB then "#{to_i} b"
-    when self < MB then "%.1g k" % (to_f/KB)
-    when self < GB then "%.1g M" % (to_f/MB)
-    else                "%.1g G" % (to_f/GB)
+    when self < MB then "%.1f k" % (to_f/KB)
+    when self < GB then "%.1f M" % (to_f/MB)
+    else                "%.1f G" % (to_f/GB)
     end
   end
 
@@ -169,7 +169,11 @@ class Commander
     end
     if args.size == 0
       puts 'Usage: resize <release-identifier>'
-      puts 'Resizes and crops images to fit the smallest width and height among them for consistency. Pages will be cropped from the gutter side (right for odd, left for even). Skips files with dashes in them (spreads).'
+      puts <<END
+Resizes and crops images to fit the smallest width and height among them for
+consistency. Pages will be cropped from the gutter side (right for odd, left
+for even). Skips files with dashes in them (spreads).
+END
       flags.help
       exit 1
     end
@@ -378,6 +382,7 @@ title. Example:
       flag.bool   'nsfw',   false, 'Mark this release as NSFW (if -u is given)'
       flag.string 'notes',  '',    'Release notes (if -u is given)'
       flag.string 'user',   '',    'User name to authenticate with (if -u is given)'
+      flag.string 'isbn',   '',    'The ISBN-13 of the volume, if applicable'
     end
     if args.size < 1
       puts 'Usage: distro <release-identifier> [trailing info...]'
@@ -438,7 +443,12 @@ title. Example:
           pngs.each_index do |i|
             png = pngs[i]
             from = File.size(png)
-            system "optipng -quiet #{png}"
+
+            if not system "optipng -quiet #{png}"
+              err "optipng interrupted."
+              exit 1
+            end
+
             to = File.size(png)
 
             if to < from
@@ -465,18 +475,27 @@ title. Example:
 
     unit, num = parse_id release
 
-    sessid = do_auth flags['user']
-    
     notes = flags['notes']
 
     if notes.empty?
-      tempfile = `mktemp releasenotes.XXXXX`.chomp
-      system "vim #{tempfile}"
-      File.open(tempfile) do |f|
+      msgfile = 'MANGA_RELEASEMSG.markdown'
+
+      # "touch" the file so it's there even if not saved
+      File.open(msgfile, 'w') {}
+
+      if not system "vim #{msgfile}"
+        err "Interrupted."
+        exit 1
+      end
+
+      File.open(msgfile) do |f|
         notes = f.read
       end
-      File.delete tempfile
+
+      File.delete msgfile
     end
+
+    sessid = do_auth flags['user']
 
     params = {
       sid: @id,
@@ -485,7 +504,8 @@ title. Example:
       filename: File.basename(zip_name),
       nsfw: flags['nsfw'],
       filesize: filesize,
-      status: notes
+      status: notes,
+      isbn: flags['isbn']
     }.to_json
 
     c = Curl::Easy.new(add_release_url)
