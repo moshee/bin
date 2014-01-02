@@ -2,13 +2,65 @@
 # encoding: utf-8
 # My main manga translation automation tool
 
-require 'psych'
-require 'curb'
-require 'json'
-require 'io/console'
-require 'fileutils'
-require 'net/http'
-require 'flag'
+# Monkeypatches
+
+class Numeric
+  def mag
+    m = 0
+    nn = +self
+    while nn > 0
+      nn /= 10
+      m += 1
+    end
+    m
+  end
+
+  KB = 1<<10
+  MB = 1<<20
+  GB = 1<<30
+
+  def bytes
+    case
+    when self < KB then "#{to_i} b"
+    when self < MB then "%.1f k" % (to_f/KB)
+    when self < GB then "%.1f M" % (to_f/MB)
+    else                "%.1f G" % (to_f/GB)
+    end
+  end
+
+  MS = 0.001
+  S = 1
+  M = 60*S
+  H = 60*M
+  D = 24*H
+  Y = 365*D
+
+  def duration
+    case when (self.is_a?(Float) and nan?)
+      '???s'
+    when self < S
+      if self < MS
+        '%dus' % (self * 1000 * 1000)
+      else
+        '%.2fms' % (self * 1000)
+      end
+    else
+      s = ''
+      s = "#{self.to_i%M}s" if self >= S
+      s = "#{(self.to_i%H) / M}m#{s}" if self >= M
+      s = "#{(self.to_i%D) / H}h#{s}" if self >= H
+      s = "#{(self.to_i%Y) / D}d#{s}" if self >= D
+      s
+    end
+  end
+end
+
+%w(psych curb json io/console fileutils net/http flag).each do |req|
+  now = Time.now
+  require req
+  $stderr.print "#{req} (#{(Time.now - now).duration})..."
+end
+puts
 
 # Utilities
 
@@ -27,7 +79,6 @@ def shell(str)
     exit 1
   end
 end
-
 
 def parse_id(id)
   return ArgumentError, "Malformed identifier: #{id} (should match /^(v|c)\d+$/)" unless id =~ /^(v|c)\d+$/
@@ -61,58 +112,10 @@ def pass_input
   s
 end
 
-# Monkeypatches
-
-class Numeric
-  def mag
-    m = 0
-    nn = +self
-    while nn > 0
-      nn /= 10
-      m += 1
-    end
-    m
-  end
-
-  KB = 1<<10
-  MB = 1<<20
-  GB = 1<<30
-
-  def bytes
-    case
-    when self < KB then "#{to_i} b"
-    when self < MB then "%.1f k" % (to_f/KB)
-    when self < GB then "%.1f M" % (to_f/MB)
-    else                "%.1f G" % (to_f/GB)
-    end
-  end
-
-  S = 1
-  M = 60*S
-  H = 60*M
-  D = 24*H
-  Y = 365*D
-
-  def duration
-    case when (self.is_a?(Float) and nan?)
-      '???s'
-    when self < S
-      '0s'
-    else
-      s = ''
-      s = "#{self.to_i%M}s" if self >= S
-      s = "#{(self.to_i%H) / M}m#{s}" if self >= M
-      s = "#{(self.to_i%D) / H}h#{s}" if self >= H
-      s = "#{(self.to_i%Y) / D}d#{s}" if self >= D
-      s
-    end
-  end
-end
-
 # Chapter splits
-# [a]	[b]	[#] [title ->$] (whitespace separated)
+# [a] [b] [#] [title ->$] (whitespace separated)
 # ex.
-# 000	020	20	THE PRINCE OF ONI: Bagworm
+# 000 020 20  THE PRINCE OF ONI: Bagworm
 # TODO: make it so only the first page needs to be specified
 # TODO: def process(files) → Array[Array]
 # TODO: make initialize() read from file
@@ -162,17 +165,62 @@ class Commander
 
   def resize(*args)
     flags = Flags.new(args) do |flag|
-      flag.bool 'g',      false, 'guerilla mode (don\'t check for .manga etc)'
-      flag.int  'h',      1600,  'Target height'
-      flag.bool 'H',      false, 'Use the smallest height as target (overrides -h)'
+      flag.bool   'g',      false, 'guerilla mode (don\'t check for .manga etc)'
+      flag.int    'h',      1600,  'Target height'
+      flag.int    'w',      -1,    'Target width'
+      flag.bool   'H',      false, 'Use the smallest height as target (overrides -h)'
+      flag.string 'single', '',    'Just do a single image (ignores the release identifier)'
       #flag.int  'colors', 64,    'Number of colors to use per image'
     end
+
+    if (single = flags['single']).size > 0
+      gravity = %w(east west)[single.rpartition('.').first.to_i % 2]
+      if flags['w'] > 0
+        resize = " -gravity #{gravity} -resize x#{flags['h']} -extent #{flags['w']}x#{flags['h']}"
+      else
+        resize = "-resize x#{flags['h']}"
+      end
+
+      cmd = case File.extname(single)
+      when '.png'
+        <<-CONVERT
+        convert "#{single}" \\
+          -colorspace RGB \\
+          -filter Lagrange \\
+          #{resize} \\
+          -ordered-dither o8x8,64 \\
+          -colorspace sRGB \\
+          -colorspace Gray \\
+          "#{single}"
+        CONVERT
+      when '.jpg'
+        <<-CONVERT
+        convert "#{single}" \\
+          -colorspace RGB \\
+          -filter Lagrange \\
+          #{resize} \\
+          -colorspace sRGB \\
+          "#{single}"
+        CONVERT
+      end
+
+      puts cmd
+      system cmd
+
+      return
+    end
+
     if args.size == 0
       puts 'Usage: resize <release-identifier>'
       puts <<END
 Resizes and crops images to fit the smallest width and height among them for
 consistency. Pages will be cropped from the gutter side (right for odd, left
 for even). Skips files with dashes in them (spreads).
+
+The resizing via ImageMagick takes into account the issues¹ caused by improper
+value vs. luminance interpretation when resizing.
+
+¹ http://www.4p8.com/eric.brasseur/gamma.html
 END
       flags.help
       exit 1
@@ -182,78 +230,151 @@ END
       manga?
     end
 
-    images, there = if flags['g']
-             list = args.map { |i| File.join('.', i) }
-             [list, '.']
-           else
-             there = res_dir args.shift
-             list = imgs_in(there).map { |i| File.join(there, i) }
-             [list, there]
-           end
-
-    sizes = `identify -format '%w %h\n' #{images.map { |i| "\"#{i}\"" }.join(' ')}`
-      .split("\n").reject(&:empty?).map { |pair| pair.split(' ').map(&:to_i) }
-
-    w = sizes.map(&:first).min
-
-    h = if flags['H']
-      sizes.map(&:last).min
+    if flags['g']
+      images = args.map { |i| File.join('.', i) }
+      there = '.'
     else
-      flags['h']
+      there = res_dir args.shift
+      images = imgs_in(there).map { |i| File.join(there, i) }
     end
 
-    max_delta = 0
+    puts 'Analyzing images...'
+    sizes = `identify -format '%w %h\n' #{images.map { |i| "\"#{i}\"" }.join(' ')}`
+      .split("\n")
+      .reject { |s| s.strip.empty? }
+      .map { |pair| pair.split(' ').map(&:to_i) }
 
-    puts 'Aligning heights...'
+    pages_before_trimming = sizes.size
+
+    if not flags['H']
+      # not in 'smallest height' mode; reject pages with height smaller than
+      # target height so that they don't get upsized
+
+      sizes.each_index do |i|
+        pair = sizes[i]
+
+        if pair[1] < flags['h']
+          images[i] = nil
+          sizes[i] = nil
+        end
+      end
+
+      sizes.delete nil
+      images.delete nil
+    end
+
+    pages_trimmed = pages_before_trimming - sizes.size
+    if pages_trimmed > 0
+      puts "#{pages_trimmed} pages skipped because they're smaller than the target height."
+    end
+
+    widths, heights = sizes.transpose
+
+    if flags['H']
+      target_height = heights.min
+    else
+      target_height = flags['h']
+    end
+    max_page_width = 0
+    height_ratio = 0
+    target_width = -1
+
+    # scale the widths to the match the height scale, determine target width
+    # also keep track of the max page width that isn't a spread
+    w = widths.each_index.map do |i|
+      height_ratio = heights[i].to_f / target_height
+      scaled_width = (widths[i] / height_ratio).to_i
+
+      if File.basename(images[i]) =~ /^\d+\./
+        if scaled_width < target_width or target_width < 0
+          target_width = scaled_width
+        elsif scaled_width > max_page_width
+          max_page_width = scaled_width
+        end
+      end
+
+      scaled_width
+    end
+      
+    max_loss = max_page_width - target_width
+
+    puts "Target dimensions: #{target_width}×#{target_height}."
+    puts "Maximum pixel loss from the side will be #{max_loss}px."
+
+    if not prompt "Continue?"
+      err 'Aborting.'
+      exit
+    end
+
     images.each_index do |i|
-      # we'll resize EVERYTHING to x#{h}, including the spreads
-
-      base = File.basename images[i]
       img = images[i]
+      base = File.basename img
 
-      delta = sizes[i].last - h
-      max_delta = [delta, max_delta].map(&:magnitude).max
-
-      if sizes[i].last == h
-        puts "\033[J[#{base}] Skipped (0px change) (max #{max_delta}px)\033[1A"
+      if heights[i] == target_height
+        puts "[#{base}] Skipped"
         next
       end
 
-      puts "\033[J[#{base}] #{sizes[i].last}px → #{h}px (#{delta}px change) (max #{max_delta}px)\033[1A"
-      system "convert \"#{img}\" -resize x#{h} \"#{img}\""
-    end
-    puts
+      # the gutter will be on the right side for odd pages and left for even
+      gravity = %w(east west)[base.rpartition('.').first.to_i % 2]
 
-    max_delta = 0
+      delta = w[i] - target_width
+      puts "[#{base}] #{widths[i]}×#{heights[i]} → " +
+        "#{target_width}×#{target_height} (lost #{delta}px)"
 
-    puts 'Aligning widths...'
-    images.each_index do |i|
-      base = File.basename images[i]
-      img = images[i]
-      next unless base =~ /^\d+\./ # skip spreads
-
-      if sizes[i].first == w # skip if it's already one of the smallest
-        puts "\033[J[#{base}] Skipped (0px change) (max #{max_delta}px)\033[1A"
-        # still reduce the colors even if there's no resize
-        #system "convert \"#{img}\" -colors #{flags['colors']} \"#{img}\""
-        next
-      end
-
-      params = case base.rpartition('.').first.to_i % 2
-      when 1 then ' -gravity west ' # odd, gutter on right side
-      when 0 then ' -gravity east '
-      end
-
-      delta = sizes[i].first - w
-      max_delta = [delta, max_delta].map(&:magnitude).max
-      puts "\033[J[#{base}] #{sizes[i].first}px → #{w}px (#{delta}px change) (max #{max_delta}px)\033[1A"
-
-      if File.extname(img) == '.png'
-        # only keep low color count for pngs. jpgs will probably be full color things.
-        color_count = `identify -format '%k' '#{img}'`
-        system "convert '#{img}' -colors #{color_count.to_i} -unique-colors -write mpr:cmap +delete '#{img}' #{params} -resize #{w}x#{h}^ -extent #{w}x#{h} -map mpr:cmap '#{img}'"
+      if is_spread base
+        resize_command = "-resize x#{target_height} \\"
       else
-        system "convert '#{img}' #{params} -resize #{w}x#{h}^ -extent #{w}x#{h} '#{img}'"
+        resize_command = <<-RESIZE
+        -resize #{target_width}x#{target_height}^ \\
+        -extent #{target_width}x#{target_height} \\
+        RESIZE
+      end
+      if File.extname(img) == '.png'
+=begin
+          # First linearize the colorspace.
+          -colorspace RGB 
+          # Align the image such that the crop will cut off from the gutter side.
+          -gravity #{gravity} 
+          # Make use of the Lagrange resize filter, a practical implementation
+          # of the sinc filter.
+          -filter Lagrange 
+          #{resize_command}
+          # Use an ordered 8x8 dither with "64" color levels (in reality it puts it
+          # around 200)
+          -ordered-dither o8x8,64  
+          # Convert the colorspace back to sRGB
+          -colorspace sRGB 
+          # Convert colorspace again to grayscale (RGB → Gray directly messes with the
+          # gamma and it ends up too dark)
+          -colorspace Gray
+=end
+
+        ok = system <<-CONVERT
+        convert "#{img}" \\
+          -colorspace RGB \\
+          -gravity #{gravity} \\
+          -filter Lagrange \\
+          #{resize_command} \\
+          -ordered-dither o8x8,64 \\
+          -colorspace sRGB \\
+          -colorspace Gray \\
+          "#{img}"
+        CONVERT
+      else
+        ok = system <<-CONVERT
+        convert "#{img}" \\
+          -colorspace RGB \\
+          -filter Lagrange \\
+          #{resize_command} \\
+          -colorspace sRGB \\
+          "#{img}"
+        CONVERT
+      end
+
+      if not ok
+        err 'Command exited with non-zero status.'
+        exit 1
       end
     end
     puts
@@ -293,20 +414,18 @@ image and splits them accordingly.  Assumes freshly scanned images to have the
     if not flags['nc']
       files.each do |file|
         file.chomp!
-        print "#{file} "
         first = i*2
         second = first+1
+        a, b = [second, first].map { |s| s.to_s.rjust(width, '0') + '.jpg' }
 
-        print '... '
+        puts "#{file} → #{b}, #{a}..."
+
         if not system "convert '#{file}' -rotate -90 -write mpr:temp +delete mpr:temp -crop 50%x100% temp.jpg"
           err 'Command exited with non-zero status.'
           exit 1
         end
-        print '→ '
-        a, b = [second, first].map { |s| s.to_s.rjust(width, '0') + '.jpg' }
         File.rename 'temp-0.jpg', a
         File.rename 'temp-1.jpg', b
-        puts "#{b}, #{a}"
         i += 1
       end
     else
@@ -795,6 +914,10 @@ the case for each.
   def psd_dir(id)
     check_id(id)
     File.join(id, 'psd')
+  end
+
+  def is_spread(filename)
+    filename =~ /\d+\-\d+/
   end
 end
 
