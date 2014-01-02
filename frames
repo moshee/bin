@@ -2,7 +2,7 @@
 # Extract frames from a video file using mplayer2
 
 def usage
-  puts 'Usage: frames mm:ss-mm:ss filename [mplayer options...]'
+  puts 'Usage: frames mm:ss-mm:ss filename [mpv options...]'
   exit 1
 end
 
@@ -17,4 +17,4 @@ time = ARGV.shift.split('-')
 usage if time.size != 2
 frames = (seconds(time.last) - seconds(time.first)).abs * 24
 filename = ARGV.shift
-exec "mplayer2 #{ARGV.join(' ')} -vo jpeg -ss #{time.first} -frames #{frames} '#{filename.gsub("'", "\\'")}'"
+exec "mpv.exe #{ARGV.join(' ')} --vo image:format=jpg --start #{time.first} --frames #{frames} '#{filename.gsub("'", "\\'")}'"
