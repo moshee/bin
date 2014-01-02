@@ -13,13 +13,13 @@ end
 
 def help
   $stderr.puts 'Usage: renumber -from <m> -to <n> <files...>'
+  flags.help
 end
 
 from, to = flags['from'], flags['to']
 
 if from.zero? and to.zero?
   help
-  flags.help
   exit
 end
 
@@ -28,13 +28,13 @@ if from == to
   exit
 end
 
-list = flags.args.sort
-
-if list.empty?
+if not flags or flags.args.size < 0
+  $stderr.puts 'No files given...'
   help
-  flags.help
   exit
 end
+
+list = flags.args.sort
 
 def magnitude(n)
   return 1 if n.zero?
@@ -53,19 +53,24 @@ end
 class Page
   def initialize(name)
     if m = name.match(/(\d+)\-(\d+)/)
+      # is spread
       @low = m[1].to_i
       @high = m[2].to_i
       @kind = :spread
-    else
+    elsif name.match(/^\d+/)
+      # is regular numbered page
       @low = name[/^\d+/].to_i
       @kind = :page
+    else
+      # isn't any known numbered page
+      @kind = ignore
     end
 
     @filename = name
     @ext = File.extname(name)
   end
 
-  attr_reader :filename
+  attr_reader :filename, :kind
 
   def add(delta, mag)
     case @kind
@@ -79,8 +84,9 @@ class Page
   end
 end
 
-pages = list.drop_while { |filename| filename[/^\d+/].to_i < from }
-  .map { |filename| Page.new filename }
+pages = list.drop_while { |filename| filename[/^\d+/].to_i < from } # drop pages up to the lower bound
+  .map { |filename| Page.new filename } # generate list of Page objects
+  .select { |page| page.kind != :ignore } # ignore pages that aren't numbered in a known way
 
 if flags['width'].zero?
   mag = magnitude list.size
