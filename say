@@ -1,6 +1,29 @@
 #!/bin/bash
+# have google translate pronounce stuff
 
-lang=$1
-shift
+DEFAULT_LANG=en
 
-mpv --really-quiet "http://translate.google.com/translate_tts?ie=UTF-8&tl=$lang&q=$@" > /dev/null 2>&1
+###############
+
+set -e
+
+if [[ -z "$@" ]]; then
+	echo "Usage: $(basename $0) [-<lang>] <phrase>" > /dev/stderr
+	exit 1
+fi
+
+lang=$DEFAULT_LANG
+
+case $1 in
+	-*)
+		if [[ $(echo -n $1 | wc -m) -gt 1 ]]; then
+			lang=$(echo -n $1 | cut -c 2-)
+			shift
+		fi
+		;;
+esac
+
+# worst urlencoder ever
+phrase=$(echo -n $@ | sed -re 's/\s+/+/g')
+
+mpv --really-quiet "http://translate.google.com/translate_tts?ie=UTF-8&tl=$lang&q=$phrase" > /dev/null 2>&1
